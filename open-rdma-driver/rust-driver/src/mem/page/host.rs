@@ -1,0 +1,122 @@
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Read},
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+    path::PathBuf,
+    ptr,
+};
+
+use crate::{constants::U_DMA_BUF_CLASS_PATH, types::PhysAddr};
+
+use super::MmapMut;
+
+use crate::mem::DmaBuf;
+use crate::mem::DmaBufAllocator;
+
+pub(crate) struct UDmaBufAllocator {
+    fd: File,
+    offset: usize,
+}
+
+impl UDmaBufAllocator {
+    pub(crate) fn open() -> io::Result<Self> {
+        let fd = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_SYNC)
+            .open("/dev/udmabuf0")?;
+
+        Ok(Self { fd, offset: 0 })
+    }
+
+    pub(crate) fn size_total() -> io::Result<usize> {
+        Self::read_attribute("size")?.parse().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to parse size: {e}"),
+            )
+        })
+    }
+
+    pub(crate) fn phys_addr() -> io::Result<u64> {
+        let str = Self::read_attribute("phys_addr")?;
+        u64::from_str_radix(str.trim_start_matches("0x"), 16).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to parse size: {e}"),
+            )
+        })
+    }
+
+    fn read_attribute(attr: &str) -> io::Result<String> {
+        let path = PathBuf::from(U_DMA_BUF_CLASS_PATH).join(attr);
+        let mut content = String::new();
+        let _ignore = File::open(&path)?.read_to_string(&mut content)?;
+        Ok(content.trim().to_owned())
+    }
+
+    #[allow(clippy::cast_possible_wrap)]
+    fn create(&mut self, len: usize) -> io::Result<DmaBuf> {
+        let size_total = Self::size_total()?;
+        if self.offset.checked_add(len).is_none_or(|x| x > size_total) {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                format!("Failed to allocate memory of length: {len} bytes"),
+            ));
+        }
+
+        let ptr = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.fd.as_raw_fd(),
+                self.offset as i64,
+            )
+        };
+
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::new(io::ErrorKind::Other, "Failed to map memory"));
+        }
+
+        unsafe {
+            ptr::write_bytes(ptr.cast::<u8>(), 0, len);
+        }
+
+        let mmap = MmapMut::new(ptr, len);
+        let phys_addr_raw = Self::phys_addr()? + self.offset as u64;
+        let phys_addr = PhysAddr::new(phys_addr_raw);
+
+        self.offset += len;
+
+        Ok(DmaBuf::new(mmap, phys_addr))
+    }
+}
+
+impl DmaBufAllocator for UDmaBufAllocator {
+    fn alloc(&mut self, len: usize) -> io::Result<DmaBuf> {
+        self.create(len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn allocate_pages() {
+        let Ok(mut allocator) = UDmaBufAllocator::open() else {
+            eprintln!("WARN: test 'allocate_pages' was skipped as it needs u-dma-buf kernel module to be loaded");
+            return;
+        };
+        let mut x = allocator.create(0x1000).unwrap();
+        assert_eq!(x.len(), 0x1000);
+        x.copy_from(0, &[1; 1]);
+        let mut x = allocator.create(0x4000).unwrap();
+        assert_eq!(x.len(), 0x4000);
+        x.copy_from(0, &[1; 1]);
+    }
+}

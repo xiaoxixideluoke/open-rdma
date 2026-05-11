@@ -1,0 +1,64 @@
+# ── Sensitive ──
+auth.json
+*.pem
+*.key
+.env
+credentials*
+
+# ── Rust / Cargo ──
+target/
+Cargo.lock
+**/*.rs.bk
+
+# ── C / C++ build ──
+*.o
+*.so
+*.a
+*.la
+*.lo
+*.out
+*.exe
+
+# ── CMake / rdma-core ──
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+!open-rdma-driver/examples/Makefile
+!open-rdma-driver/tests/base_test/tests/Makefile
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+*.egg
+
+# ── Verilator / cocotb ──
+sim_build/
+*.vcd
+*.fst
+
+# ── Bluespec ──
+*.bo
+*.ba
+*.bi
+*.bdir/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Misc ──
+*.log
+*.tmp
+*.temp

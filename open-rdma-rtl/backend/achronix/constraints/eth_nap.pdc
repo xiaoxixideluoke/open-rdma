@@ -1,0 +1,9 @@
+# Note use of "i:" at start of instance name
+set_placement -fixed i:dutInst.ethNapVec_0_ethNap_inst s:x_core.NOC[1][2].logic.noc.nap_m
+set_placement -fixed i:dutInst.ethNapVec_1_ethNap_inst s:x_core.NOC[1][4].logic.noc.nap_m
+set_placement -fixed i:dutInst.ethNapVec_2_ethNap_inst s:x_core.NOC[1][6].logic.noc.nap_m
+set_placement -fixed i:dutInst.ethNapVec_3_ethNap_inst s:x_core.NOC[1][8].logic.noc.nap_m
+
+# Set reset to be ROC
+# Do not use wildcards, as other similarly named signals may be different
+set_clock_type -data_center [find rstn -nets -no_prefix]

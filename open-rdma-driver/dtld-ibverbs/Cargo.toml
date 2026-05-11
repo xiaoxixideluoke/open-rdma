@@ -1,0 +1,24 @@
+[package]
+name = "dtld-ibverbs"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["hw"]
+hw = ["blue-rdma-driver/hw", "blue-rdma-driver/page_size_2m"]
+sim = ["blue-rdma-driver/sim", "blue-rdma-driver/page_size_2m"]
+mock = ["blue-rdma-driver/mock", "blue-rdma-driver/page_size_2m"]
+debug_csrs = ["blue-rdma-driver/debug_csrs"]
+
+[lib]
+name = "bluerdma_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+env_logger = "0.11.8"
+log = "0.4.27"
+blue-rdma-driver = { path = "../rust-driver", version = "0.1.0", default-features = false }
+
+# FFI bindings, may replaced with bindgen in the future
+ffi = { package = "ibverbs-sys", git = "https://github.com/bsbds/rust-ibverbs.git", rev = "ea06bdc" }

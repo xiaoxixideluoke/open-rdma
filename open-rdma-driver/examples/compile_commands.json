@@ -1,0 +1,32 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-c",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-o",
+      "loopback",
+      "loopback.c"
+    ],
+    "directory": "/home/mmhh/blue-rdma-driver/examples",
+    "file": "/home/mmhh/blue-rdma-driver/examples/loopback.c",
+    "output": "/home/mmhh/blue-rdma-driver/examples/loopback"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-c",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-o",
+      "send_recv",
+      "send_recv.c"
+    ],
+    "directory": "/home/mmhh/blue-rdma-driver/examples",
+    "file": "/home/mmhh/blue-rdma-driver/examples/send_recv.c",
+    "output": "/home/mmhh/blue-rdma-driver/examples/send_recv"
+  }
+]

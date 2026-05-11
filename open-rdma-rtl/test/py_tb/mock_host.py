@@ -1,0 +1,607 @@
+# coding:utf-8
+import os
+import gc
+import socket
+from ctypes import *
+from enum import IntEnum
+from multiprocessing import shared_memory
+import threading
+import time
+from hw_consts import *
+from ringbufs import *
+import math
+import struct
+from scapy.all import Ether
+from collections import deque
+from abc import ABC, abstractmethod
+
+"""
+Define the types we need.
+"""
+
+
+class CtypesEnum(IntEnum):
+    """A ctypes-compatible IntEnum superclass."""
+    @classmethod
+    def from_param(cls, obj):
+        return int(obj)
+
+
+class CEnumRpcOpcode(CtypesEnum):
+    RpcOpcodePcieBarGetReadReq = 1
+    RpcOpcodePcieBarPutReadResp = 2
+    RpcOpcodePcieBarGetWriteReq = 3
+    RpcOpcodePcieBarPutWriteResp = 4
+    RpcOpcodePcieMemWrite = 5
+    RpcOpcodePcieMemRead = 6
+    RpcOpcodeNetIfcPutTxData = 7
+    RpcOpcodeNetIfcGetRxData = 8
+
+
+class CStructRpcHeader(Structure):
+    _fields_ = [
+        ("opcode", c_int),
+        ("client_id", c_longlong),
+        ("tag", c_longlong),
+    ]
+
+
+class CStructBarIoInfo(Structure):
+    _fields_ = [
+        ("value", c_longlong),
+        ("addr", c_longlong),
+        ("valid", c_longlong),
+        ("pci_tag", c_longlong),
+    ]
+
+
+class CStructRpcPcieBarAccessMessage(Structure):
+    _fields_ = [
+        ("header", CStructRpcHeader),
+        ("payload", CStructBarIoInfo),
+    ]
+
+
+class CStructMemIoInfo(Structure):
+    _fields_ = [
+        ("word_addr", c_longlong),
+        ("word_width", c_longlong),
+        ("data", c_ubyte * 32),
+        ("byte_en", c_ubyte * 4),
+    ]
+
+
+class CStructRpcPcieMemoryAccessMessage(Structure):
+    _fields_ = [
+        ("header", CStructRpcHeader),
+        ("payload", CStructMemIoInfo),
+    ]
+
+
+class CStructRpcNetIfcRxTxPayload(Structure):
+    _fields_ = [
+        ("data", c_ubyte * 32),
+        ("mod", c_ubyte),
+        ("is_fisrt", c_ubyte),
+        ("is_last", c_ubyte),
+        ("is_valid", c_ubyte),
+    ]
+
+
+class CStructRpcNetIfcRxTxMessage(Structure):
+    _fields_ = [
+        ("header", CStructRpcHeader),
+        ("payload", CStructRpcNetIfcRxTxPayload),
+    ]
+
+
+CUbyteArray64 = c_ubyte * 64
+CUbyteArray8 = c_ubyte * 8
+
+
+class BluesimRpcServerHandler:
+    def __init__(self, client_socket, rpc_code_2_handler_map, rpc_code_2_payload_size_map):
+        self.stop_flag = False
+        self.client_socket = client_socket
+        self.rpc_code_2_handler_map = rpc_code_2_handler_map
+        self.rpc_code_2_payload_size_map = rpc_code_2_payload_size_map
+
+    def run(self):
+        self.stop_flag = False
+        self.server_thread = threading.Thread(target=self._run)
+        self.server_thread.start()
+
+    def _run(self):
+        raw_req_buf = bytearray(4096)
+
+        while not self.stop_flag:
+            recv_pointer = 0
+            recv_cnt = self.client_socket.recv_into(
+                raw_req_buf, sizeof(CStructRpcHeader))
+
+            if recv_cnt != sizeof(CStructRpcHeader):
+                raise Exception("receive broken rpc header")
+            rpc_header = CStructRpcHeader.from_buffer(raw_req_buf)
+            remain_size = self.rpc_code_2_payload_size_map[rpc_header.opcode] - sizeof(
+                CStructRpcHeader)
+            recv_pointer = recv_cnt
+
+            while remain_size > 0:
+                t = self.client_socket.recv(remain_size)
+                recv_cnt = len(t)
+                raw_req_buf[recv_pointer:recv_pointer + recv_cnt] = t
+                if recv_cnt == 0:
+                    raise Exception("bluesim exited, connection broken.")
+                remain_size -= recv_cnt
+                recv_pointer += recv_cnt
+
+            self.rpc_code_2_handler_map[rpc_header.opcode](
+                self.client_socket, raw_req_buf)
+
+
+class BluesimRpcServer:
+    def __init__(self, lister_addr, listen_port) -> None:
+        self.rpc_code_2_handler_map = {}
+        self.rpc_code_2_payload_size_map = {}
+        self.listen_addr = lister_addr
+        self.listen_port = listen_port
+        self.server_thread = None
+        self.stop_flag = False
+
+    def register_opcode(self, opcode, handler, payload_size):
+        self.rpc_code_2_handler_map[opcode] = handler
+        self.rpc_code_2_payload_size_map[opcode] = payload_size
+
+    def run(self):
+        self.stop_flag = False
+        self.server_thread = threading.Thread(target=self._run)
+        self.server_thread.start()
+
+    def stop(self):
+        self.stop_flag = True
+
+    def _run(self):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((self.listen_addr, self.listen_port))
+        server_socket.listen(1)
+
+        print('TCP server started')
+
+        while not self.stop_flag:
+            client_socket, client_address = server_socket.accept()
+            client_socket.settimeout(5)
+            print('Client connected:', client_address)
+
+            handler = BluesimRpcServerHandler(
+                client_socket, self.rpc_code_2_handler_map, self.rpc_code_2_payload_size_map)
+            handler.run()
+
+
+class MockHostMem:
+    def __init__(self, shared_mem_name, shared_mem_size) -> None:
+        self.shared_mem_name = shared_mem_name
+        self.shared_mem_size = shared_mem_size
+
+        try:
+            self.shared_mem_obj = shared_memory.SharedMemory(
+                shared_mem_name, True, shared_mem_size)
+        except FileExistsError:
+            self.shared_mem_obj = shared_memory.SharedMemory(
+                shared_mem_name, False, shared_mem_size)
+
+        self.buf = self.shared_mem_obj.buf
+
+        self.buf[:] = b"\0" * shared_mem_size
+
+    def close(self):
+        gc.collect()
+        self.shared_mem_obj.close()
+        self.shared_mem_obj.unlink()
+
+
+def open_shared_mem_to_hw_simulator(mem_size, shared_mem_file=None):
+    if shared_mem_file is None:
+        shared_mem_file = "/bluesim1"
+    host_mem = MockHostMem(shared_mem_file, mem_size)
+    return host_mem
+
+
+class NetworkDataAgent:
+    BEAT_DATA_BYTE_WIDTH = 32
+
+    def __init__(self, mock_host):
+        self.mock_host = mock_host
+        self.tx_data_buf = b""
+        self.full_tx_data_list = []
+
+    def put_tx_frag(self, frag):
+        ones = self.BEAT_DATA_BYTE_WIDTH if frag.mod == 0 else frag.mod
+        self.tx_data_buf += bytes(frag.data[:ones])
+        if frag.is_last:
+            self.full_tx_data_list.append(self.tx_data_buf)
+            self.tx_data_buf = b""
+
+    def put_full_rx_data(self, data):
+        remain_size = len(data)
+        while remain_size > 0:
+            if remain_size > self.BEAT_DATA_BYTE_WIDTH:
+                data_trunk = data[:self.BEAT_DATA_BYTE_WIDTH]
+                data = data[self.BEAT_DATA_BYTE_WIDTH:]
+                tx_msg = CStructRpcNetIfcRxTxMessage(
+                    header=CStructRpcHeader(
+                        opcode=CEnumRpcOpcode.RpcOpcodeNetIfcGetRxData,
+                    ),
+                    payload=CStructRpcNetIfcRxTxPayload(
+                        data=data_trunk,
+                        mod=self.BEAT_DATA_BYTE_WIDTH,
+                        is_last=0,
+                        is_valid=1
+                    )
+                )
+                self.mock_host.put_net_ifc_rx_data_to_nic(tx_msg.payload)
+                remain_size -= self.BEAT_DATA_BYTE_WIDTH
+            else:
+                data = data + (b"\0" * (self.BEAT_DATA_BYTE_WIDTH-remain_size))
+                tx_msg = CStructRpcNetIfcRxTxMessage(
+                    header=CStructRpcHeader(
+                        opcode=CEnumRpcOpcode.RpcOpcodeNetIfcGetRxData,
+                    ),
+                    payload=CStructRpcNetIfcRxTxPayload(
+                        data=data,
+                        mod=remain_size & 0x1f,
+                        is_last=1,
+                        is_valid=1
+                    )
+                )
+                # TODO: should use `tx_msg.payload` or `tx_msg` ?
+                self.mock_host.put_net_ifc_rx_data_to_nic(tx_msg.payload)
+                remain_size -= self.BEAT_DATA_BYTE_WIDTH
+
+    def get_full_tx_packet(self):
+        if self.full_tx_data_list:
+            return self.full_tx_data_list.pop(0)
+        else:
+            return None
+
+
+class MockNicInterface(ABC):
+    """
+    Abstract base class for a mock NIC interface.
+    """
+
+    @abstractmethod
+    def run(self):
+        """
+        Start the mock NIC interface.
+        """
+
+        pass
+
+    @abstractmethod
+    def stop(self):
+        """
+        Stop the mock NIC interface.
+        """
+
+        pass
+
+    @abstractmethod
+    def get_net_ifc_tx_data_from_nic_blocking(self, channel_id):
+        """
+        Get the transmitted data from the mock NIC interface in a blocking manner.
+        """
+
+        pass
+
+    @abstractmethod
+    def put_net_ifc_rx_data_to_nic(self, channel_id, data):
+        """
+        Put the received data into the mock NIC interface.
+        """
+
+        pass
+
+    @abstractmethod
+    def get_network_tx_channel_ids(self) -> list:
+        pass
+
+    @abstractmethod
+    def get_network_rx_channel_ids(self) -> list:
+        pass
+
+
+class NicManager:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def do_self_loopback(cls, nic: MockNicInterface):
+        def _self_loopback_thread(channel_id):
+            while True:
+                tx_channel_ids = nic.get_network_tx_channel_ids()
+                rx_channel_ids = nic.get_network_tx_channel_ids()
+                if len(tx_channel_ids) > channel_id and len(rx_channel_ids):
+                    data = nic.get_net_ifc_tx_data_from_nic_blocking(
+                        tx_channel_ids[channel_id])
+                    nic.put_net_ifc_rx_data_to_nic(
+                        rx_channel_ids[channel_id], data)
+                else:
+                    time.sleep(0.01)
+
+        forward_thread_handles = []
+        for channel_id in range(4):
+            forward_thread_handle = threading.Thread(
+                target=_self_loopback_thread, args=(channel_id,))
+            forward_thread_handles.append(forward_thread_handle)
+            forward_thread_handle.start()
+
+    @classmethod
+    def connect_two_card(cls, nic_a: MockNicInterface,
+                         nic_b: MockNicInterface):
+
+        def _forward_a(channel_id):
+            while True:
+                tx_channel_ids = nic_a.get_network_tx_channel_ids()
+                rx_channel_ids = nic_b.get_network_tx_channel_ids()
+                if len(tx_channel_ids) > channel_id and len(rx_channel_ids):
+                    data = nic_a.get_net_ifc_tx_data_from_nic_blocking(
+                        tx_channel_ids[channel_id])
+                    nic_b.put_net_ifc_rx_data_to_nic(
+                        rx_channel_ids[channel_id], data)
+                else:
+                    time.sleep(0.01)
+
+        def _forward_b(channel_id):
+            while True:
+                tx_channel_ids = nic_b.get_network_tx_channel_ids()
+                rx_channel_ids = nic_a.get_network_tx_channel_ids()
+                if len(tx_channel_ids) > channel_id and len(rx_channel_ids):
+
+                    data = nic_b.get_net_ifc_tx_data_from_nic_blocking(
+                        tx_channel_ids[channel_id])
+                    nic_a.put_net_ifc_rx_data_to_nic(
+                        rx_channel_ids[channel_id], data)
+                else:
+                    time.sleep(0.01)
+
+        forward_thread_a_handles = []
+        forward_thread_b_handles = []
+        for channel_id in range(4):
+            forward_thread_a_handle = threading.Thread(
+                target=_forward_a, args=(channel_id,))
+            forward_thread_b_handle = threading.Thread(
+                target=_forward_b, args=(channel_id,))
+
+            forward_thread_a_handles.append(forward_thread_a_handle)
+            forward_thread_b_handles.append(forward_thread_b_handle)
+
+            forward_thread_a_handle.start()
+            forward_thread_b_handle.start()
+
+
+HOST = '127.0.0.1'
+PORT = 9874
+
+# A mock nic that can send and receive packets
+
+
+class EmulatorMockNicAndHost(MockNicInterface):
+    '''
+    # tx_packet_accumulate_cnt can be used to mimic line-rate receive, the MockHost will not output tx packet until it accumulated
+    # more than tx_packet_accumulate_cnt. This is because network clock is async with rdma clock, so from
+    # rx simulator's point of view, the packet received from network interface is non-continous (has bulbs). if we want to test is
+    # reveive logic is fully-pipelined, we need to make sure RQ reveive packet continous. So we can buffer some packet.
+    '''
+
+    def __init__(self, main_memory: MockHostMem, host=None, port=None, tx_packet_accumulate_cnt=0) -> None:
+
+        if host is None:
+            host = os.environ.get("MOCK_HOST_SERVER_HOST", HOST)
+        if port is None:
+            port = os.environ.get("MOCK_HOST_SERVER_PORT", PORT)
+
+        self.main_memory = main_memory
+        self.bluesim_rpc_server = BluesimRpcServer(host, port)
+        self.bluesim_rpc_server.register_opcode(
+            CEnumRpcOpcode.RpcOpcodePcieBarGetReadReq, self.rpc_handler_pcie_bar_get_read_req, sizeof(CStructRpcPcieBarAccessMessage))
+        self.bluesim_rpc_server.register_opcode(
+            CEnumRpcOpcode.RpcOpcodePcieBarPutReadResp, self.rpc_handler_pcie_bar_put_read_resp, sizeof(CStructRpcPcieBarAccessMessage))
+        self.bluesim_rpc_server.register_opcode(
+            CEnumRpcOpcode.RpcOpcodePcieBarGetWriteReq, self.rpc_handler_pcie_bar_get_write_req, sizeof(CStructRpcPcieBarAccessMessage))
+        self.bluesim_rpc_server.register_opcode(
+            CEnumRpcOpcode.RpcOpcodePcieBarPutWriteResp, self.rpc_handler_pcie_bar_put_write_resp, sizeof(CStructRpcPcieBarAccessMessage))
+        self.bluesim_rpc_server.register_opcode(
+            CEnumRpcOpcode.RpcOpcodePcieMemWrite, self.rpc_handler_pcie_mem_write_req, sizeof(CStructRpcPcieMemoryAccessMessage))
+        self.bluesim_rpc_server.register_opcode(
+            CEnumRpcOpcode.RpcOpcodePcieMemRead, self.rpc_handler_pcie_mem_read_req, sizeof(CStructRpcPcieMemoryAccessMessage))
+
+        self.bluesim_rpc_server.register_opcode(
+            CEnumRpcOpcode.RpcOpcodeNetIfcGetRxData, self.rpc_handler_net_ifc_get_rx_req, sizeof(CStructRpcNetIfcRxTxMessage))
+        self.bluesim_rpc_server.register_opcode(
+            CEnumRpcOpcode.RpcOpcodeNetIfcPutTxData, self.rpc_handler_net_ifc_put_tx_req, sizeof(CStructRpcNetIfcRxTxMessage))
+
+        self.pending_bar_write_req = []
+        self.pending_bar_write_req_waiting_dict = {}
+        self.pending_bar_write_resp = {}
+
+        self.pending_bar_read_req = []
+        self.pending_bar_read_req_waiting_dict = {}
+        self.pending_bar_read_resp = {}
+
+        self.pending_network_packet_tx = {}
+        self.pending_network_packet_tx_sema = {}
+        self.pending_network_packet_rx = {}
+
+        self.client_id_to_network_tx_channel_mapping = {}
+        self.client_id_to_network_rx_channel_mapping = {}
+        self.network_tx_channel_id_allocate_counter = 0
+        self.network_rx_channel_id_allocate_counter = 0
+
+        self.pcie_tlp_read_tag_counter = 0
+        self.tx_packet_accumulate_cnt = tx_packet_accumulate_cnt
+        self.is_accumulating = tx_packet_accumulate_cnt != 0
+
+        self.running = True
+
+    def run(self):
+        self.bluesim_rpc_server.run()
+
+    def stop(self):
+        self.bluesim_rpc_server.stop()
+
+    def get_network_tx_channel_ids(self):
+        return list(self.client_id_to_network_tx_channel_mapping.values())
+
+    def get_network_rx_channel_ids(self):
+        return list(self.client_id_to_network_rx_channel_mapping.values())
+
+    def _get_next_pcie_tlp_tag(self):
+        if self.pcie_tlp_read_tag_counter == 32:
+            self.pcie_tlp_read_tag_counter = 0
+        else:
+            self.pcie_tlp_read_tag_counter += 1
+        return self.pcie_tlp_read_tag_counter
+
+    def rpc_handler_pcie_bar_get_read_req(self, client_socket, raw_req_buf):
+        req = CStructRpcPcieBarAccessMessage.from_buffer_copy(raw_req_buf)
+        if self.pending_bar_read_req:
+            req_payload = self.pending_bar_read_req.pop(0)
+            req.payload = req_payload
+        else:
+            req.payload.valid = 0
+        client_socket.send(bytes(req))
+
+    def rpc_handler_pcie_bar_put_read_resp(self, client_socket, raw_req_buf):
+        resp = CStructRpcPcieBarAccessMessage.from_buffer_copy(raw_req_buf)
+        if resp.payload.pci_tag in self.pending_bar_read_resp:
+            raise Exception(
+                "pcie read tag conflict, maybe too many outstanding requests")
+        self.pending_bar_read_resp[resp.payload.pci_tag] = resp
+        self.pending_bar_read_req_waiting_dict[resp.payload.pci_tag].set()
+        # this Op doesn't send response
+
+    def rpc_handler_pcie_bar_get_write_req(self, client_socket, raw_req_buf):
+        req = CStructRpcPcieBarAccessMessage.from_buffer_copy(raw_req_buf)
+        if self.pending_bar_write_req:
+            req_payload = self.pending_bar_write_req.pop(0)
+            req.payload = req_payload
+        else:
+            req.payload.valid = 0
+        client_socket.send(bytes(req))
+
+    def rpc_handler_pcie_bar_put_write_resp(self, client_socket, raw_req_buf):
+        resp = CStructRpcPcieBarAccessMessage.from_buffer_copy(raw_req_buf)
+        if resp.payload.pci_tag in self.pending_bar_write_resp:
+            raise Exception(
+                "pcie write tag conflict, maybe too many outstanding requests")
+        self.pending_bar_write_resp[resp.payload.pci_tag] = resp
+
+        if resp.payload.pci_tag in self.pending_bar_write_req_waiting_dict:
+            # only for write csr blocking case, non-blocking version doesn't have event
+            self.pending_bar_write_req_waiting_dict[resp.payload.pci_tag].set()
+
+        # this Op doesn't send response
+
+    def rpc_handler_pcie_mem_write_req(self, client_socket, raw_req_buf):
+        req = CStructRpcPcieMemoryAccessMessage.from_buffer_copy(raw_req_buf)
+        byte_cnt_per_word = req.payload.word_width >> 3
+        host_mem_start_addr = req.payload.word_addr * byte_cnt_per_word
+        byte_en = int.from_bytes(req.payload.byte_en, byteorder="little")
+        for idx in range(byte_cnt_per_word):
+            if byte_en & 0x01 == 0x01:
+                self.main_memory.buf[
+                    host_mem_start_addr + idx] = int(req.payload.data[idx])
+                # print("write_mem ", hex(host_mem_start_addr + idx),
+                #       int(req.payload.data[idx]))
+            byte_en >>= 1
+        # this Op doesn't send response
+
+    def rpc_handler_pcie_mem_read_req(self, client_socket, raw_req_buf):
+        req = CStructRpcPcieMemoryAccessMessage.from_buffer_copy(raw_req_buf)
+        byte_cnt_per_word = req.payload.word_width >> 3
+        host_mem_start_addr = req.payload.word_addr * byte_cnt_per_word
+        req.payload.data[0:byte_cnt_per_word] = self.main_memory.buf[host_mem_start_addr:
+                                                                     host_mem_start_addr + byte_cnt_per_word]
+        client_socket.send(bytes(req))
+
+    def rpc_handler_net_ifc_get_rx_req(self, client_socket, raw_req_buf):
+        req = CStructRpcNetIfcRxTxMessage.from_buffer_copy(raw_req_buf)
+
+        channel_id = self.client_id_to_network_rx_channel_mapping.get(
+            req.header.client_id)
+        if channel_id is None:
+            channel_id = self.network_rx_channel_id_allocate_counter
+            self.client_id_to_network_rx_channel_mapping[req.header.client_id] = channel_id
+            self.pending_network_packet_rx.setdefault(channel_id, [])
+
+        if self.pending_network_packet_rx[channel_id]:
+            req_payload = self.pending_network_packet_rx[channel_id].pop(0)
+            req.payload = req_payload
+        else:
+            req.payload.is_valid = 0
+
+        client_socket.send(bytes(req))
+
+    def rpc_handler_net_ifc_put_tx_req(self, client_socket, raw_req_buf):
+        req = CStructRpcNetIfcRxTxMessage.from_buffer_copy(raw_req_buf)
+
+        channel_id = self.client_id_to_network_tx_channel_mapping.get(
+            req.header.client_id)
+        if channel_id is None:
+            channel_id = self.network_tx_channel_id_allocate_counter
+            self.client_id_to_network_tx_channel_mapping[req.header.client_id] = channel_id
+            self.pending_network_packet_tx.setdefault(channel_id, [])
+            self.pending_network_packet_tx_sema.setdefault(
+                channel_id, threading.Semaphore(0))
+
+        self.pending_network_packet_tx[channel_id].append(req.payload)
+        self.pending_network_packet_tx_sema[channel_id].release()
+        # this Op doesn't send response
+
+    def write_csr_non_blocking(self, addr, value):
+        tag = self._get_next_pcie_tlp_tag()
+        self.pending_bar_write_req.append(
+            CStructBarIoInfo(valid=1, addr=addr, value=value, pci_tag=tag))
+
+    def write_csr_blocking(self, addr, value):
+        tag = self._get_next_pcie_tlp_tag()
+        self.pending_bar_write_req.append(
+            CStructBarIoInfo(valid=1, addr=addr, value=value, pci_tag=tag))
+        evt = threading.Event()
+        if tag in self.pending_bar_write_req_waiting_dict:
+            raise Exception(
+                "pcie write tag conflict, maybe too many outstanding requests")
+        self.pending_bar_write_req_waiting_dict[tag] = evt
+        evt.wait()
+        del self.pending_bar_write_req_waiting_dict[tag]
+        resp = self.pending_bar_write_resp.pop(tag)
+        return resp.payload.value
+
+    # blocking version of read_csr, wait until we get response
+    def read_csr_blocking(self, addr):
+        tag = self._get_next_pcie_tlp_tag()
+        self.pending_bar_read_req.append(
+            CStructBarIoInfo(valid=1, addr=addr, value=0, pci_tag=tag))
+        evt = threading.Event()
+        if tag in self.pending_bar_read_req_waiting_dict:
+            raise Exception(
+                "pcie read tag conflict, maybe too many outstanding requests")
+        self.pending_bar_read_req_waiting_dict[tag] = evt
+        evt.wait()
+        del self.pending_bar_read_req_waiting_dict[tag]
+        resp = self.pending_bar_read_resp.pop(tag)
+        return resp.payload.value
+
+    def get_net_ifc_tx_data_from_nic_blocking(self, channel_id):
+        if self.is_accumulating:
+            while len(self.pending_network_packet_tx[channel_id]) < self.tx_packet_accumulate_cnt:
+                time.sleep(0.1)
+            self.is_accumulating = False
+        self.pending_network_packet_tx_sema.setdefault(
+            channel_id, threading.Semaphore(0)).acquire()
+        data = self.pending_network_packet_tx[channel_id].pop(0)
+        return data
+
+    def put_net_ifc_rx_data_to_nic(self, channel_id, frag):
+        return self.pending_network_packet_rx[channel_id].append(frag)

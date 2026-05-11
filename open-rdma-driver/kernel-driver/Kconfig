@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config bluerdma
+	tristate "Datenlord RDMA (Blue RDMA) Adapter support"
+	depends on PCI_MSI && 64BIT
+	depends on INFINIBAND_ADDR_TRANS
+	depends on INFINIBAND_USER_ACCESS
+	help
+		TODO

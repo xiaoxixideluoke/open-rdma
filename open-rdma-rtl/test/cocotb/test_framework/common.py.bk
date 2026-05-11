@@ -1,0 +1,1004 @@
+import shutil
+import os
+from collections import deque, OrderedDict
+from abc import ABC
+import logging
+import math
+
+import asyncio
+
+import cocotb
+from cocotb.triggers import RisingEdge, FallingEdge, ReadWrite, ReadOnly, Edge, NextTimeStep
+from cocotb.binary import BinaryValue
+from cocotb.queue import Queue
+import cocotb.triggers
+
+
+def gen_rtl_file_list(top_paths):
+    fileset = set()
+    filelist = []
+    for top_path in top_paths.split(":"):
+        for (dirpath, dirnames, filenames) in os.walk(top_path):
+            for filename in filenames:
+                if filename.endswith(".v") or filename.endswith(".sv"):
+                    if filename not in fileset:
+                        filelist.append(os.path.join(dirpath, filename))
+                        fileset.add(filename)
+    return filelist
+
+
+def copy_mem_file_to_sim_build_dir(src_dirs, target_dir):
+    for top_path in src_dirs.split(":"):
+        for (dirpath, dirnames, filenames) in os.walk(top_path):
+            for filename in filenames:
+                if filename.endswith(".bin") or filename.endswith(".hex"):
+                    shutil.copyfile(os.path.join(
+                        dirpath, filename), os.path.join(target_dir, filename))
+
+
+class BluespecValueMethod:
+    def __init__(self, dut, signal_base_name, clk, ready_prefix="RDY_", wait_combinational_value_update=False):
+
+        self.log = logging.getLogger("cocotb.tb")
+        self.log.setLevel(logging.DEBUG)
+
+        self.dut = dut
+        self.clk = clk
+        self.signal_base_name = signal_base_name
+        self.wait_combinational_value_update = wait_combinational_value_update
+
+        ready_signal_name = ready_prefix + signal_base_name
+        return_value_signal_name = signal_base_name
+
+        self.ready_signal = getattr(dut, ready_signal_name)
+        self.return_value_signal = getattr(dut, return_value_signal_name)
+
+        self.pending_call_evt = cocotb.triggers.Event()
+        self.call_finished_evt = cocotb.triggers.Event()
+        self.call_args = {}
+        self.return_value = None
+        cocotb.start_soon(self._handshake_task())
+
+    async def _handshake_task(self):
+        while True:
+            await RisingEdge(self.clk)
+            await ReadWrite()
+            if not (self.ready_signal.value == 1 and self.pending_call_evt.is_set()):
+                continue  # handshake failed
+
+            self.pending_call_evt.clear()
+
+            if self.wait_combinational_value_update:
+                for (arg_name, arg_val) in self.call_args.items():
+                    getattr(self.dut, self.signal_base_name +
+                            f"_{arg_name}").setimmediatevalue(arg_val)
+                await ReadWrite()
+            else:
+                for (arg_name, arg_val) in self.call_args.items():
+                    getattr(self.dut, self.signal_base_name +
+                            f"_{arg_name}").value = arg_val
+
+            if self.return_value_signal is not None:
+                self.return_value = self.return_value_signal.value
+            else:
+                self.return_value = None
+
+            self.call_finished_evt.set()
+
+    async def __call__(self, **kwargs):
+        self.call_args = kwargs
+        self.pending_call_evt.set()
+        await self.call_finished_evt.wait()
+        # self.log.info(
+        #     f"return_value={self.return_value}, {self.signal_base_name}")
+        return self.return_value
+
+
+class BluespecActionValueMethod:
+    def __init__(self, dut, signal_base_name, clk, ready_prefix="RDY_", enable_prefix="EN_", wait_combinational_value_update=False):
+
+        self.log = logging.getLogger("cocotb.tb")
+        self.log.setLevel(logging.DEBUG)
+
+        self.dut = dut
+        self.clk = clk
+        self.signal_base_name = signal_base_name
+        self.wait_combinational_value_update = wait_combinational_value_update
+
+        ready_signal_name = ready_prefix + signal_base_name
+        enable_signal_name = enable_prefix + signal_base_name
+        return_value_signal_name = signal_base_name
+
+        self.ready_signal = getattr(dut, ready_signal_name)
+        self.enable_signal = getattr(dut, enable_signal_name)
+        self.return_value_signal = getattr(dut, return_value_signal_name, None)
+
+        self.enable_signal.setimmediatevalue(0)
+
+        self.pending_call_evt = cocotb.triggers.Event()
+        self.call_finished_evt = cocotb.triggers.Event()
+        self.call_args = {}
+        self.return_value = None
+        cocotb.start_soon(self._handshake_task())
+
+    async def _handshake_task(self):
+        while True:
+            await RisingEdge(self.clk)
+            await ReadWrite()
+
+            self.enable_signal.setimmediatevalue(
+                self.pending_call_evt.is_set())
+            if not (self.ready_signal.value == 1 and self.pending_call_evt.is_set()):
+                continue  # handshake failed
+
+            self.pending_call_evt.clear()
+
+            if self.wait_combinational_value_update:
+                for (arg_name, arg_val) in self.call_args.items():
+                    getattr(self.dut, self.signal_base_name +
+                            f"_{arg_name}").setimmediatevalue(arg_val)
+                await ReadWrite()
+            else:
+                for (arg_name, arg_val) in self.call_args.items():
+                    getattr(self.dut, self.signal_base_name +
+                            f"_{arg_name}").value = arg_val
+
+            if self.return_value_signal is not None:
+                self.return_value = self.return_value_signal.value
+            else:
+                self.return_value = None
+
+            self.call_finished_evt.set()
+
+    async def __call__(self, **kwargs):
+        self.call_args = kwargs
+        self.pending_call_evt.set()
+        await self.call_finished_evt.wait()
+        return self.return_value
+
+
+class BluespecActionMethod(BluespecActionValueMethod):
+    def __init__(self, dut, signal_base_name, clk, ready_prefix="RDY_", enable_prefix="EN_", wait_combinational_value_update=False):
+        super().__init__(dut, signal_base_name, clk, ready_prefix,
+                         enable_prefix, wait_combinational_value_update)
+        self.return_value_signal = None
+
+
+class BluespecType(ABC):
+    def pack(self) -> int:
+        return 0
+
+    def unpack(self, val):
+        pass
+
+    def width(self):
+        pass
+
+
+class BluespecBits(BluespecType):
+    _width = 0
+
+    def __init__(self, value=None):
+        if not isinstance(value, BluespecBits):
+            self._inner = BinaryValue(
+                value, n_bits=self._width, bigEndian=False)
+        else:
+            self._inner = BinaryValue(
+                value.pack(), n_bits=value.width(), bigEndian=False)
+
+    def pack(self):
+        return self._inner.integer
+
+    @classmethod
+    def unpack(cls, val):
+        return cls(val)
+
+    @classmethod
+    def width(cls):
+        return cls._width
+
+    def __str__(self):
+        return str(hex(self._inner.integer))
+
+    def __repr__(self):
+        return str(hex(self._inner.integer))
+
+    def __call__(self):
+        return self.pack()
+
+
+class BluespecStruct(BluespecType):
+    _members_def = OrderedDict()
+    _width = -1  # lazy calc
+
+    def __init__(self, *members):
+        self.__dict__["_members"] = OrderedDict()
+
+        for ((member_name, member_type), member_inst) in zip(self._members_def.items(), members):
+            if isinstance(member_inst, BluespecType):
+                assert isinstance(member_inst, member_type)
+                self._members[member_name] = member_inst
+            else:
+                self._members[member_name] = member_type(member_inst)
+
+    def pack(self):
+        packed_val = 0
+        for member in self._members.values():
+            member_packed_val = member.pack()
+            packed_val = (packed_val << member.width()) | member_packed_val
+        return packed_val
+
+    @classmethod
+    def width(cls):
+        if cls._width == -1:
+            _width = 0
+            for member_type in cls._members_def.values():
+                _width += member_type.width()
+            cls._width = _width
+
+        return cls._width
+
+    def __getattr__(self, name):
+        if name in self._members:
+            return self._members[name]
+        return super().__getattribute__(name)
+
+    def __setattr__(self, name, value):
+        if name in self._members:
+            self._members[name] = self._members_def[name].unpack(value)
+            return
+        return super().__setattr__(name, value)
+
+    @classmethod
+    def unpack(cls, val):
+        args = []
+        for member_type in reversed(cls._members_def.values()):
+            mask = (1 << member_type.width()) - 1
+            member_val = val & mask
+            args.append(member_type.unpack(member_val))
+            val = val >> member_type.width()
+
+        args.reverse()
+        ret = cls(*args)
+        return ret
+
+    def __repr__(self):
+        return f"<{type(self)} {self._members}>"
+
+
+class BluespecUnionTagNotMatchError(Exception):
+    pass
+
+
+class BluespecTaggedUnion(BluespecType):
+    _members_def = OrderedDict()
+    _width = -1  # lazy calc
+
+    def __init__(self, tag, value):
+        self.__dict__["_members"] = OrderedDict()
+
+        assert type(value) == self._members_def[tag]
+
+        self._tag = tag
+        self._value = value
+        self._tag_idx = -1
+
+        tag_bit_len = (len(self._members_def)).bit_length()
+
+        for (idx, (tag_name, member_type)) in enumerate(self._members_def.items()):
+            self._width = max(self._width, member_type.width())
+            if tag_name == tag:
+                self._tag_idx = idx
+        self._width += tag_bit_len
+
+        self.tag_bits = self._tag_idx << (self._width - tag_bit_len)
+
+    def pack(self):
+        return self._value.pack() | self.tag_bits
+
+    @classmethod
+    def width(cls):
+        if cls._width == -1:
+            _width = 0
+            for member_type in cls._members_def.values():
+                _width = max(_width, member_type.width())
+            tag_bit_len = (len(cls._members_def)).bit_length()
+            _width += tag_bit_len
+
+            cls._width = _width
+
+        return cls._width
+
+    def get_by_tag(self, tag):
+        if tag == self._tag:
+            return self._value
+        else:
+            raise BluespecUnionTagNotMatchError(
+                f"inner data tag is {self._tag}")
+
+    def get_by_tag_default(self, tag, default=None):
+        if tag == self._tag:
+            return self._value
+        else:
+            return default
+
+    def is_match_tag(self, tag):
+        return tag == self._tag
+
+    @classmethod
+    def unpack(cls, val):
+        payload_width = 0
+        for member_type in cls._members_def.values():
+            payload_width = max(payload_width, member_type.width())
+
+        tag_bits = val >> payload_width
+
+        tag_name, type_of_payload = list(cls._members_def.items())[tag_bits]
+
+        mask = (1 << type_of_payload.width()) - 1
+        member_val = val & mask
+
+        payload = type_of_payload.unpack(member_val)
+        return cls(tag_name, payload)
+
+    def __repr__(self):
+        return f"<{type(self)} {self._tag}: {self._value}>"
+
+
+class BluespecBool(BluespecBits):
+    _width = 1
+
+    def __call__(self):
+        ret = super().__call__()
+        return ret == 1
+
+
+class BluespecVoid(BluespecBits):
+    _width = 0
+
+
+def BluespecMaybe(inner_type):
+    class BluespecMaybeInner(BluespecTaggedUnion):
+        _members_def = OrderedDict(
+            invalid=BluespecVoid,
+            valid=inner_type,
+        )
+
+        def __repr__(self):
+            return f"<BluespecMaybe#({inner_type.__class__}) {self._tag} {self._value}>"
+    return BluespecMaybeInner
+
+
+#####################################################
+#####################################################
+#####################################################
+BLUERDMA_MAX_QP = 512
+BLUERDMA_QPN_WIDTH = 24
+BLUERDMA_QP_INDEX_WIDTH = int(math.log(BLUERDMA_MAX_QP, 2))
+BLUERDMA_QPN_KEY_PART_WIDTH = BLUERDMA_QPN_WIDTH - BLUERDMA_QP_INDEX_WIDTH
+
+
+def get_qpn(qp_index, qp_key):
+    return (qp_index << BLUERDMA_QPN_KEY_PART_WIDTH) | qp_key
+
+
+class BlueRdmaData256(BluespecBits):
+    _width = 256
+
+
+class BlueRdmaData256ByteNum(BluespecBits):
+    _width = 6
+
+
+class BlueRdmaData256ByteIndex(BluespecBits):
+    _width = 5
+
+
+class BlueRdmaLength(BluespecBits):
+    _width = 32
+
+
+class BlueRdmaAddr(BluespecBits):
+    _width = 64
+
+
+class BlueRdmaDataStream256(BluespecStruct):
+    _members_def = OrderedDict(
+        data=BlueRdmaData256,
+        byte_num=BlueRdmaData256ByteNum,
+        start_byte_index=BlueRdmaData256ByteIndex,
+        is_first=BluespecBool,
+        is_last=BluespecBool
+    )
+
+    def __init__(self, data, byte_num, start_byte_index, is_first, is_last):
+        data = BlueRdmaData256(data)
+        byte_num = BlueRdmaData256ByteNum(byte_num)
+        start_byte_index = BlueRdmaData256ByteIndex(start_byte_index)
+        is_first = BluespecBool(is_first)
+        is_last = BluespecBool(is_last)
+        super().__init__(data, byte_num, start_byte_index, is_first, is_last)
+
+    def __str__(self):
+        return (
+            f"< BlueRdmaDataStream256 "
+            f"data={self.data}, "
+            f"byte_num={self.byte_num}, "
+            f"start_byte_index={self.start_byte_index}, "
+            f"is_first={self.is_first}, "
+            f"is_last={self.is_last} >"
+        )
+
+
+class BlueRdmaDtldStreamMemAccessMeta(BluespecStruct):
+    _members_def = OrderedDict(
+        addr=BlueRdmaAddr,
+        total_len=BlueRdmaLength,
+    )
+
+    def __init__(self, addr, total_len):
+        addr = BlueRdmaAddr(addr)
+        total_len = BlueRdmaLength(total_len)
+
+        super().__init__(addr, total_len)
+
+    def __str__(self):
+        return (
+            f"< BlueRdmaDtldStreamMemAccessMeta "
+            f"addr={self.addr}, "
+            f"total_len={self.total_len} >"
+        )
+
+
+class BlueRdmaPKEY(BluespecBits):
+    _width = 16
+
+
+class BlueRdmaWorkReqOpCode(BluespecBits):
+    _width = 4
+
+
+class BlueRdmaWorkReqSendFlag(BluespecBits):
+    _width = 5
+
+
+class BlueRdmaTypeQP(BluespecBits):
+    _width = 4
+
+
+class BlueRdmaPSN(BluespecBits):
+    _width = 24
+
+
+class BlueRdmaPMTU(BluespecBits):
+    _width = 3
+
+
+class BlueRdmaIpAddr(BluespecBits):
+    _width = 32
+
+
+class BlueRdmaEthMacAddr(BluespecBits):
+    _width = 48
+
+
+class BlueRdmaLKEY(BluespecBits):
+    _width = 32
+
+
+class BlueRdmaRKEY(BluespecBits):
+    _width = 32
+
+
+class BlueRdmaQPN(BluespecBits):
+    _width = 24
+
+
+def BlueRdmaReservedZero(width):
+    class BlueRdmaReservedZeroInner(BluespecBits):
+        _width = width
+    return BlueRdmaReservedZeroInner
+
+
+class BlueRdmaWorkQueueElem(BluespecStruct):
+    _members_def = OrderedDict(
+        pkey=BlueRdmaPKEY,
+        opcode=BlueRdmaWorkReqOpCode,
+        flags=BlueRdmaWorkReqSendFlag,
+        qp_type=BlueRdmaTypeQP,
+        psn=BlueRdmaPSN,
+        pmtu=BlueRdmaPMTU,
+        dqp_ip=BlueRdmaIpAddr,
+        mac_addr=BlueRdmaEthMacAddr,
+        laddr=BlueRdmaAddr,
+        lkey=BlueRdmaLKEY,
+        raddr=BlueRdmaAddr,
+        rkey=BlueRdmaRKEY,
+        len=BlueRdmaLength,
+        totalLen=BlueRdmaLength,
+        dqpn=BlueRdmaQPN,
+        sqpn=BlueRdmaQPN,
+        comp=BlueRdmaReservedZero(65),
+        swap=BlueRdmaReservedZero(65),
+        immDtOrInvRKey=BlueRdmaReservedZero(34),
+        srqn=BlueRdmaReservedZero(25),
+        qkey=BlueRdmaReservedZero(33),
+        is_first=BluespecBool,
+        is_last=BluespecBool,
+    )
+
+    def __init__(self, pkey, opcode, flags, qp_type, psn, pmtu, dqp_ip,
+                 mac_addr, laddr, lkey, raddr, rkey, len, totalLen, dqpn, sqpn, is_first, is_last):
+        super().__init__(pkey, opcode, flags, qp_type, psn, pmtu, dqp_ip,
+                         mac_addr, laddr, lkey, raddr, rkey, len, totalLen, dqpn, sqpn, 0, 0, 0, 0, 0, is_first, is_last)
+
+
+class BlueRdmaFourChannelPsnBitmapPreMergeReq(BluespecStruct):
+    _members_def = OrderedDict(
+        psn=BlueRdmaPSN,
+        qpn=BlueRdmaQPN,
+    )
+
+    def __init__(self, psn, qpn):
+        super().__init__(psn, qpn)
+
+
+class BlueRdmaOooWindowBitmap(BluespecBits):
+    _width = 128
+
+
+class BlueRdmaPsnMergeWindowBoundary(BluespecBits):
+    _width = 20
+
+
+class BlueRdmaOooWindowBitmapStorageEntryEpoch(BluespecBits):
+    _width = 4
+
+
+class BlueRdmaOooWindowBitmapStorageChannelIdx(BluespecBits):
+    _width = 1
+
+
+class BlueRdmaIndexQP(BluespecBits):
+    _width = BLUERDMA_QP_INDEX_WIDTH
+
+
+class BlueRdmaBitmapWindowStorageEntry(BluespecStruct):
+    _members_def = OrderedDict(
+        data=BlueRdmaOooWindowBitmap,
+        leftBound=BlueRdmaPsnMergeWindowBoundary,
+        epoch=BlueRdmaOooWindowBitmapStorageEntryEpoch,
+        channelIdx=BlueRdmaOooWindowBitmapStorageChannelIdx,
+    )
+
+    def __init__(self, data, leftBound, epoch, channelIdx):
+        super().__init__(data, leftBound, epoch, channelIdx)
+
+
+class BlueRdmaBitmapWindowStorageUpdateResp(BluespecStruct):
+    _members_def = OrderedDict(
+        rowAddr=BlueRdmaIndexQP,
+        isShiftWindow=BluespecBool,
+        isShiftOutOfBoundary=BluespecBool,
+        windowShiftedOutData=BlueRdmaOooWindowBitmap,
+        oldEntry=BlueRdmaBitmapWindowStorageEntry,
+        newEntry=BlueRdmaBitmapWindowStorageEntry
+    )
+
+    def __init__(self, rowAddr, isShiftWindow, isShiftOutOfBoundary, windowShiftedOutData, oldEntry, newEntry):
+        super().__init__(rowAddr, isShiftWindow, isShiftOutOfBoundary,
+                         windowShiftedOutData, oldEntry, newEntry)
+
+
+BlueRdmaBitmapWindowStorageUpdateRespMaybe = BluespecMaybe(
+    BlueRdmaBitmapWindowStorageUpdateResp)
+
+
+class BluespecPipeOut:
+    def __init__(self, dut, signal_base_name, clk, is_zero_width_signal=False):
+        self.dut = dut
+        self.clk = clk
+        self.signal_base_name = signal_base_name
+        self.is_zero_width_signal = is_zero_width_signal
+
+        self.bsv_not_empty = BluespecValueMethod(
+            dut, signal_base_name + "_notEmpty", clk)
+        if not is_zero_width_signal:
+            self.bsv_first = BluespecValueMethod(
+                dut, signal_base_name + "_first", clk)
+        self.bsv_deq = BluespecActionMethod(
+            dut, signal_base_name + "_deq", clk)
+
+    async def not_empty(self):
+        return await self.bsv_not_empty()
+
+    async def deq(self):
+        await self.bsv_deq()
+
+    async def first(self):
+        if self.is_zero_width_signal:
+            return 0
+        return await self.bsv_first()
+
+
+class BluespecPipeIn:
+    def __init__(self, dut, signal_base_name, clk):
+        self.dut = dut
+        self.clk = clk
+        self.signal_base_name = signal_base_name
+
+        self.bsv_not_full = BluespecValueMethod(
+            dut, signal_base_name + "_notFull", clk)
+        self.bsv_enq = BluespecActionMethod(
+            dut, signal_base_name + "_enq", clk)
+
+    async def not_full(self):
+        return await self.bsv_not_full()
+
+    async def enq(self, data):
+        await self.bsv_enq(data=data)
+
+
+class BluespecPipeInB0:
+    def __init__(self, dut, signal_base_name, clk):
+        self.dut = dut
+        self.clk = clk
+        self.signal_base_name = signal_base_name
+
+        self.bsv_deq_signal_out = BluespecValueMethod(
+            dut, signal_base_name + "_deqSignalOut", clk, wait_combinational_value_update=True)
+        self.bsv_first_in = BluespecActionMethod(
+            dut, signal_base_name + "_firstIn", clk, wait_combinational_value_update=True)
+        self.bsv_not_empty_in = BluespecActionMethod(
+            dut, signal_base_name + "_notEmptyIn", clk, wait_combinational_value_update=True)
+
+    async def deq_signal_out(self):
+        return await self.bsv_deq_signal_out()
+
+    async def first_in(self, data):
+        await self.bsv_first_in(dataIn=data)
+
+    async def not_empty_in(self, data):
+        await self.bsv_not_empty_in(val=data)
+
+
+class BluespecPipeInB0WithQueue:
+    def __init__(self, dut, signal_base_name, clk):
+        self.log = logging.getLogger("cocotb.tb")
+        self.log.setLevel(logging.INFO)
+
+        self.dut = dut
+        self.clk = clk
+        self.signal_base_name = signal_base_name
+
+        self._pipe_in_nr = BluespecPipeInB0(dut, signal_base_name, clk)
+        self._queue = deque(maxlen=2)
+        self._deq_event = cocotb.triggers.Event()
+        cocotb.start_soon(self._forward_task())
+
+    async def _forward_task(self):
+        await RisingEdge(self.clk)
+        while True:
+            deq_signal = await self._pipe_in_nr.deq_signal_out()
+            if deq_signal == 1:
+                assert len(self._queue) > 0
+                self._queue.popleft()
+                self._deq_event.set()
+                self.log.debug(
+                    f"BluespecPipeInB0WithQueue handle deq signal. signal_name={self.signal_base_name}")
+
+            if len(self._queue) > 0:
+                ele = self._queue[0]
+                await self._pipe_in_nr.first_in(ele)
+                await self._pipe_in_nr.not_empty_in(1)
+
+                debug_ds = BlueRdmaDataStream256.unpack(ele)
+                self.log.debug(
+                    f"BluespecPipeInB0WithQueue forward. signal_name={self.signal_base_name}, ele={debug_ds}")
+
+            else:
+                await self._pipe_in_nr.not_empty_in(0)
+
+            await RisingEdge(self.clk)
+
+    async def not_full(self):
+        return len(self._queue) != self._queue.maxlen
+
+    async def enq(self, data):
+        if len(self._queue) == self._queue.maxlen:
+            self._deq_event.clear()
+            await self._deq_event.wait()
+        self._queue.append(data)
+        # self.log.debug(
+        #     f"BluespecPipeInB0WithQueue enq. signal_name={self.signal_base_name}, data={data}")
+
+
+class SimplePcieBehaviorModel(object):
+    def __init__(self, dut, requester_ifc_base_names, completer_ifc_base_names, mem=None):
+        self.dut = dut
+
+        self.log = logging.getLogger("cocotb.tb")
+        self.log.setLevel(logging.INFO)
+
+        self.clock = dut.CLK
+        self.resetn = dut.RST_N
+
+        self.requester_write_meta_pipes = []
+        self.requester_write_data_pipes = []
+        self.requester_read_meta_pipes = []
+        self.requester_read_data_pipes = []
+
+        for base_name in requester_ifc_base_names:
+            self.requester_write_meta_pipes.append(BluespecPipeOut(
+                dut, f"{base_name}_writePipeIfc_writeMetaPipeOut", self.clock))
+            self.requester_write_data_pipes.append(BluespecPipeOut(
+                dut, f"{base_name}_writePipeIfc_writeDataPipeOut", self.clock))
+            self.requester_read_meta_pipes.append(BluespecPipeOut(
+                dut, f"{base_name}_readPipeIfc_readMetaPipeOut", self.clock))
+            self.requester_read_data_pipes.append(BluespecPipeInB0WithQueue(
+                dut, f"{base_name}_readPipeIfc_readDataPipeIn", self.clock))
+
+        self.requester_channel_cnt = len(requester_ifc_base_names)
+
+        self.completer_write_meta_pipes = []
+        self.completer_write_data_pipes = []
+        self.completer_read_meta_pipes = []
+        self.completer_read_data_pipes = []
+        for base_name in completer_ifc_base_names:
+            self.completer_write_meta_pipes.append(BluespecPipeIn(
+                dut, f"{base_name}_writePipeIfc_writeMetaPipeIn", self.clock))
+            self.completer_write_data_pipes.append(BluespecPipeIn(
+                dut, f"{base_name}_writePipeIfc_writeDataPipeIn", self.clock))
+            self.completer_read_meta_pipes.append(BluespecPipeIn(
+                dut, f"{base_name}_readPipeIfc_readMetaPipeIn", self.clock))
+            self.completer_read_data_pipes.append(BluespecPipeOut(
+                dut, f"{base_name}_readPipeIfc_readDataPipeOut", self.clock))
+
+        self.completer_channel_cnt = len(completer_ifc_base_names)
+
+        self.completer_inflight_read_enevts = [
+            [] for _ in range(self.completer_channel_cnt)]
+        self.completer_inflight_read_resps = [
+            [] for _ in range(self.completer_channel_cnt)]
+
+        self.mem = mem or [0] * (1 << 25)
+
+        for channel_idx in range(self.requester_channel_cnt):
+            cocotb.start_soon(self._handle_requester_write_req(channel_idx))
+            cocotb.start_soon(self._handle_requester_read_req(channel_idx))
+
+        for channel_idx in range(self.completer_channel_cnt):
+            cocotb.start_soon(self._handle_completer_read_resp(channel_idx))
+
+    async def _handle_requester_write_req(self, channel_idx):
+        # loop to handle each request
+        while True:
+            if await self.requester_write_meta_pipes[channel_idx].not_empty():
+                write_meta_raw = await self.requester_write_meta_pipes[channel_idx].first()
+                await self.requester_write_meta_pipes[channel_idx].deq()
+                write_meta = BlueRdmaDtldStreamMemAccessMeta.unpack(
+                    write_meta_raw)
+
+                cur_write_addr = write_meta.addr()
+                total_len = 0
+
+                self.log.debug(
+                    f"cur_write_addr={hex(cur_write_addr)}, total_len={hex(write_meta.total_len())}")
+                # loop to handle each beat in a request
+                while True:
+                    if await self.requester_write_data_pipes[channel_idx].not_empty():
+                        write_data_raw = await self.requester_write_data_pipes[channel_idx].first()
+                        await self.requester_write_data_pipes[channel_idx].deq()
+                        write_data = BlueRdmaDataStream256.unpack(
+                            write_data_raw)
+
+                        data = write_data.data()
+                        if (write_data.is_first()):
+                            data >>= (write_data.start_byte_index() * 8)
+
+                        old_write_addr = cur_write_addr
+                        for _ in range(write_data.byte_num()):
+                            self.mem[cur_write_addr] = data & 0xff
+                            data >>= 8
+                            cur_write_addr += 1
+
+                        total_len += write_data.byte_num()
+                        self.log.debug(
+                            f"write_addr = {hex(old_write_addr)}, write_data={write_data}", )
+
+                        if (write_data.is_last()):
+                            assert total_len == write_meta.total_len()
+                            break
+                    await RisingEdge(self.clock)  # wait for next beat
+
+            await RisingEdge(self.clock)  # wait for next write req
+
+    async def _handle_requester_read_req(self, channel_idx):
+        # loop to handle each request
+        while True:
+            if await self.requester_read_meta_pipes[channel_idx].not_empty():
+                read_meta_raw = await self.requester_read_meta_pipes[channel_idx].first()
+                await self.requester_read_meta_pipes[channel_idx].deq()
+                read_meta = BlueRdmaDtldStreamMemAccessMeta.unpack(
+                    read_meta_raw)
+
+                cur_read_addr = read_meta.addr()
+                bytes_left = read_meta.total_len()
+                is_first = True
+                self.log.debug(
+                    f"cur_read_addr={hex(cur_read_addr)}, bytes_left={hex(bytes_left)}")
+                # loop to handle each beat in a request
+                while True:
+                    if await self.requester_read_data_pipes[channel_idx].not_full():
+                        data = 0
+
+                        if is_first:
+                            start_byte_index = cur_read_addr & 0x03
+                        else:
+                            start_byte_index = 0
+
+                        if bytes_left + start_byte_index <= 32:
+                            is_last = True
+                            byte_num = bytes_left
+                        else:
+                            is_last = False
+                            byte_num = 32 - start_byte_index
+
+                        old_read_addr = cur_read_addr
+                        for byte_idx in range(byte_num):
+                            data |= (self.mem[cur_read_addr] << (byte_idx * 8))
+                            cur_read_addr += 1
+
+                        if (is_first):
+                            data <<= (start_byte_index * 8)
+
+                        read_data = BlueRdmaDataStream256(
+                            data=data.to_bytes(32, byteorder="little"),
+                            byte_num=byte_num,
+                            start_byte_index=start_byte_index,
+                            is_first=is_first,
+                            is_last=is_last
+                        )
+                        await self.requester_read_data_pipes[channel_idx].enq(read_data.pack())
+                        self.log.debug(
+                            f"addr={hex(old_read_addr)}, read_data={read_data}")
+
+                        is_first = False
+                        bytes_left -= byte_num
+
+                        if (is_last):
+                            break
+                    await RisingEdge(self.clock)  # wait for next beat
+
+            await RisingEdge(self.clock)  # wait for next read req
+
+    async def _handle_completer_read_resp(self, channel_idx):
+        while True:
+            if (await self.completer_read_data_pipes[channel_idx].not_empty()):
+                raw_resp = await self.completer_read_data_pipes[channel_idx].first()
+                await self.completer_read_data_pipes[channel_idx].deq()
+                resp = BlueRdmaDataStream256.unpack(raw_resp)
+                assert resp.is_first() == True
+                assert resp.is_last() == True
+                assert resp.byte_num() == 4
+                assert resp.start_byte_index() == 0
+                beat_data = resp.data() & 0xFFFFFFFF
+                self.completer_inflight_read_resps[channel_idx].append(
+                    beat_data)
+                evt = self.completer_inflight_read_enevts[channel_idx].pop(0)
+                evt.set()
+            await RisingEdge(self.clock)
+
+    async def host_read_blocking(self, addr):
+        read_meta = BlueRdmaDtldStreamMemAccessMeta(
+            addr=addr,
+            total_len=4
+        )
+        while not (await self.completer_read_meta_pipes[0].not_full()):
+            await cocotb.triggers.Timer(2, "ns")
+        await self.completer_read_meta_pipes[0].enq(read_meta.pack())
+        evt = cocotb.triggers.Event()
+        self.completer_inflight_read_enevts[0].append(evt)
+        await evt.wait()
+        resp = self.completer_inflight_read_resps[0].pop(0)
+        return resp
+
+    async def host_write_blocking(self, addr, value):
+        write_meta = BlueRdmaDtldStreamMemAccessMeta(
+            addr=addr,
+            total_len=4
+        )
+        write_data = BlueRdmaDataStream256(
+            data=value.to_bytes(32, byteorder="little"),
+            byte_num=4,
+            start_byte_index=0,
+            is_first=True,
+            is_last=True
+        )
+        while not (await self.completer_write_meta_pipes[0].not_full()) and (await self.completer_write_data_pipes[0].not_full()):
+            await cocotb.triggers.Timer(2, "ns")
+        await self.completer_write_meta_pipes[0].enq(write_meta.pack())
+        await self.completer_write_data_pipes[0].enq(write_data.pack())
+        await RisingEdge(self.clock)
+
+
+class SimpleEthBehaviorModel(object):
+    def __init__(self, dut, tx_ifc_base_names, rx_ifc_base_names):
+        self.dut = dut
+
+        self.log = logging.getLogger("cocotb.tb")
+        self.log.setLevel(logging.INFO)
+
+        self.clock = dut.CLK
+        self.resetn = dut.RST_N
+
+        self.txChannels = []
+        self.rxChannels = []
+        for idx in range(len(tx_ifc_base_names)):
+            self.txChannels.append(BluespecPipeOut(
+                dut, tx_ifc_base_names[idx], self.clock))
+            self.rxChannels.append(BluespecPipeInB0WithQueue(
+                dut, rx_ifc_base_names[idx], self.clock))
+
+        self.main_rx_queue = Queue()
+        self.main_tx_queue = Queue()
+
+        for idx in range(len(tx_ifc_base_names)):
+            cocotb.start_soon(self._handle_dut_tx_task(idx))
+            cocotb.start_soon(self._handle_dut_rx_task(idx))
+
+    async def get_tx_packet(self):
+        return await self.main_tx_queue.get()
+
+    async def inject_rx_packet(self, packet):
+        await self.main_rx_queue.put(packet)
+
+    async def _handle_dut_tx_task(self, idx):
+        packet_data = b""
+        while True:
+            if await self.txChannels[idx].not_empty():
+                ds_raw = await self.txChannels[idx].first()
+                await self.txChannels[idx].deq()
+                ds = BlueRdmaDataStream256.unpack(ds_raw)
+                # self.log.debug(f"eth bfm channel {idx} got beat, ds={ds}")
+
+                ds_data_as_bytes = ds.data().to_bytes(32, byteorder="little")
+                packet_data += ds_data_as_bytes[:ds.byte_num()]
+
+                if ds.is_last():
+                    await self.main_tx_queue.put(packet_data)
+                    # self.log.debug(
+                    #     f"eth bfm channel {idx} got full packet, data={packet_data}")
+                    packet_data = b""
+            await RisingEdge(self.clock)
+
+    async def _handle_dut_rx_task(self, idx):
+        while True:
+            packet_to_send = await self.main_rx_queue.get()
+            send_pos = 0
+            while send_pos < len(packet_to_send):
+                if await self.rxChannels[idx].not_full():
+                    data = packet_to_send[send_pos:send_pos+32]
+                    is_first = send_pos == 0
+                    send_pos += 32
+                    is_last = send_pos >= len(packet_to_send)
+
+                    ds = BlueRdmaDataStream256(
+                        data=data,
+                        byte_num=len(data),
+                        start_byte_index=0,
+                        is_first=is_first,
+                        is_last=is_last
+                    )
+                    await self.rxChannels[idx].enq(ds.pack())
+                    self.log.debug(f"inject rx beat to dut, ds={ds}")
+                await RisingEdge(self.clock)
+            await RisingEdge(self.clock)
+
+
+class DeviceRingbufTestHelper:
+    def __init__(self, dut, pcie_bfm, mem, start_addr):
+        self.dut = dut
+        self.pcie_bfm = pcie_bfm
+        self.mem = mem
+        self.start_addr = start_addr

@@ -1,0 +1,22 @@
+target/
+build/
+.direnv
+.envrc
+.projectile-cache.eld
+.vscode
+.cache
+*.ko
+*.mod
+*.mod.c
+*.o
+*.cmd
+Module.symvers
+modules.order
+*.log
+
+# Examples executables
+examples/loopback
+examples/send_recv
+examples/rdma_client_server
+
+**/.cargo/

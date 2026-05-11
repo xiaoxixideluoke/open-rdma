@@ -1,0 +1,24 @@
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.ethNapVec_0_ethNap_inst s:x_core.NOC[4][5].logic.noc.nap_m
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.ethNapVec_1_ethNap_inst s:x_core.NOC[4][6].logic.noc.nap_m
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.ethNapVec_2_ethNap_inst s:x_core.NOC[4][7].logic.noc.nap_m
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.ethNapVec_3_ethNap_inst s:x_core.NOC[4][8].logic.noc.nap_m
+
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.dmaReadSlaveNapVec_0.axiSlaveNap_inst s:x_core.NOC[1][5].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.dmaReadSlaveNapVec_1.axiSlaveNap_inst s:x_core.NOC[1][6].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.dmaReadSlaveNapVec_2.axiSlaveNap_inst s:x_core.NOC[1][7].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.dmaReadSlaveNapVec_3.axiSlaveNap_inst s:x_core.NOC[1][8].logic.noc.nap_s
+
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.dmaWriteSlaveNapVec_0.axiSlaveNap_inst s:x_core.NOC[7][5].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.dmaWriteSlaveNapVec_1.axiSlaveNap_inst s:x_core.NOC[7][6].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.dmaWriteSlaveNapVec_2.axiSlaveNap_inst s:x_core.NOC[7][7].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_qpMrPgtQpc.dmaWriteSlaveNapVec_3.axiSlaveNap_inst s:x_core.NOC[7][8].logic.noc.nap_s
+
+set_placement -fixed i:dutInst.dut_ringbufDmaNapVec_0_nap.axiSlaveNap_inst s:x_core.NOC[8][5].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_ringbufDmaNapVec_1_nap.axiSlaveNap_inst s:x_core.NOC[8][6].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_ringbufDmaNapVec_2_nap.axiSlaveNap_inst s:x_core.NOC[8][7].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_ringbufDmaNapVec_3_nap.axiSlaveNap_inst s:x_core.NOC[8][8].logic.noc.nap_s
+
+set_placement -fixed i:dutInst.dut_cmdQueueRingbufDmaNap_nap.axiSlaveNap_inst s:x_core.NOC[9][8].logic.noc.nap_s
+set_placement -fixed i:dutInst.dut_pgtUpdateDmaNapWrappr_nap.axiSlaveNap_inst s:x_core.NOC[9][7].logic.noc.nap_s
+
+set_placement -fixed i:dutInst.dut_csrRootSwitch_napInst.axiMasterNap_inst s:x_core.NOC[8][6].logic.noc.nap_m

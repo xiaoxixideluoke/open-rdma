@@ -1,0 +1,9 @@
+create_region "region_1" {10 210 250 295} -snap none -type inclusive
+# create_region "region_2" {170 160 210 210} -snap none -type inclusive
+# create_region "region_3" {169 90 210 140} -snap none -type inclusive
+# create_region "region_4" {169 20 210 70} -snap none -type inclusive
+add_region_insts region_1 [find -insts {*sqVec_0*}]
+add_region_insts region_1 [find -insts {*rqVec_0*}]
+# add_region_insts region_2 [find -insts {*rqVec_1*inputPacketClass*}]
+# add_region_insts region_3 [find -insts {*rqVec_2*inputPacketClass*}]
+# add_region_insts region_4 [find -insts {*rqVec_3*inputPacketClass*}]

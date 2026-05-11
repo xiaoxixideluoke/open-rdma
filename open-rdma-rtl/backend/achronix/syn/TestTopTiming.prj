@@ -1,0 +1,145 @@
+#--  Synopsys, Inc.
+#--  Version U-2023.03X-2
+#--  Project file /root/work/backend/achronix/syn/TestTopTiming.prj
+#--  Written on Wed Jul 24 03:13:43 2024
+
+
+#project files
+add_file -verilog -vlog_std sysv "/tools/Achronix-linux/libraries/device_models/AC7t1500ES0_synplify.sv"
+add_file -verilog "../../verilog/FIFO2.v"
+add_file -verilog "../../verilog/FIFO20.v"
+add_file -verilog "../../verilog/RegN.v"
+add_file -verilog "../../verilog/RWire.v"
+add_file -verilog "../../verilog/SizedFIFO.v"
+add_file -verilog -vlog_std sysv "../../../src/verilog/reset_processor_v2.sv"
+add_file -verilog "../../verilog/FIFOL1.v"
+add_file -verilog "../../verilog/mkAcxNapSlaveWrapper.v"
+add_file -verilog "../../verilog/mkTestTopTiming.v"
+add_file -verilog "../../verilog/mkAddressTranslate.v"
+add_file -verilog "../../verilog/mkAddressTranslateEightWayQuery.v"
+add_file -verilog "../../verilog/mkAddressTranslateTwoWayQuery.v"
+add_file -verilog "../../verilog/mkBiDirectionStreamShifter.v"
+add_file -verilog "../../verilog/mkMemRegionTable.v"
+add_file -verilog "../../verilog/mkMemRegionTableEightWayQuery.v"
+add_file -verilog "../../verilog/mkMemRegionTableTwoWayQuery.v"
+add_file -verilog "../../verilog/mkQpContext.v"
+add_file -verilog "../../verilog/mkQpContextFourWayQuery.v"
+add_file -verilog "../../verilog/mkQpContextTwoWayQuery.v"
+add_file -verilog "../../verilog/mkEthernetPacketGenerator.v"
+add_file -verilog "../../verilog/RegFile.v"
+add_file -verilog "../../verilog/SizedFIFO0.v"
+add_file -verilog "../../verilog/mkRdmaMetaAndPayloadExtractor.v"
+add_file -verilog "../../verilog/mkInputPacketClassifier.v"
+add_file -fpga_constraint "../constraints/compile_points.fdc"
+add_file -verilog "../../verilog/mkSQ.v"
+add_file -verilog "../../verilog/mkAcxNapSlaveWrapperPipe.v"
+add_file -verilog "../../verilog/mkPayloadGenAndCon.v"
+add_file -verilog "../../verilog/mkRQ.v"
+add_file -verilog "../../verilog/mkPayloadCon.v"
+add_file -verilog "../../verilog/mkPayloadGen.v"
+add_file -verilog "../../verilog/SyncRegister.v"
+add_file -verilog "../../../test/verilog/top_mkTestTopTiming.v"
+add_file -constraint "../ioring/TestTopTiming_ioring.sdc"
+add_file -verilog "../../../src/verilog/bsv_modules/SyncFIFO.v"
+add_file -verilog "../../../src/verilog/bsv_modules/SyncHandshake.v"
+add_file -verilog "../../verilog/mkQpMrPgtQpc.v"
+add_file -verilog "../../verilog/Counter.v"
+add_file -verilog "../../verilog/mkCommandQueueDescParserAndDispatcher.v"
+add_file -verilog "../../verilog/mkMrAndPgtUpdater.v"
+add_file -verilog "../../verilog/mkWorkQueueDescParser.v"
+add_file -verilog "../../verilog/mkAcxNapMasterWrapperPipe.v"
+
+
+#implementation: "rev_10"
+impl -add rev_10 -type fpga
+
+#
+#implementation attributes
+
+set_option -vlog_std sysv
+set_option -num_startend_points 5
+set_option -project_relative_includes 1
+set_option -include_path {/tools/Achronix-linux/libraries/}
+
+#device options
+set_option -technology ACHRONIXSPEEDSTER7T
+set_option -part AC7t1500ES0
+set_option -package F53
+set_option -speed_grade C1
+set_option -part_companion ""
+
+#compilation/mapping options
+set_option -top_module "top_mkTestTopTiming"
+
+# hdl_compiler_options
+set_option -distributed_compile 0
+set_option -scm2hydra 0
+set_option -scm2hydra_preserve_rtl_sig 1
+set_option -hdl_strict_syntax 0
+set_option -rtl_xmr_naming 0
+set_option -use_module_idb 1
+
+# mapper_without_write_options
+set_option -frequency 510.000000
+set_option -srs_instrumentation 1
+
+# mapper_options
+set_option -write_verilog 1
+set_option -write_structural_verilog 0
+set_option -write_vhdl 0
+
+# achronix_options
+set_option -route_delay_model acx_custom_route_delay_1
+
+# Achronix Speedster7t
+set_option -maxfan 200
+set_option -rw_check_on_ram 0
+set_option -disable_io_insertion 1
+set_option -retime_registers_forward 0
+set_option -pipe 0
+set_option -retiming 0
+set_option -update_models_cp 0
+set_option -continue_on_error 0
+set_option -run_prop_extract 1
+set_option -fix_gated_and_generated_clocks 1
+set_option -infer_mlp72 1
+set_option -const_mult_threshold 3
+set_option -wide_mux_inference 0
+set_option -mem_init_file 0
+set_option -use_unified_compile 0
+
+# NFilter
+set_option -no_sequential_opt 0
+
+# common_options
+set_option -add_dut_hierarchy 0
+set_option -prepare_readback 0
+set_option -validate_mif_files 0
+
+# timing_analyst_options
+set_option -reporting_output_srm 0
+
+# flow_options
+set_option -slr_aware_debug 0
+
+# sequential_optimization_options
+set_option -symbolic_fsm_compiler 0
+
+# Compiler Options
+set_option -compiler_compatible 0
+set_option -resource_sharing 0
+set_option -multi_file_compilation_unit 1
+
+# Compiler Options
+set_option -auto_infer_blackbox 0
+
+#timing report file option
+set_option -reporting_filename "TestTopTiming.ta"
+set_option -fpga_constraint  ../../../test/verilog/top_mkTestTopTiming.v ../constraints/compile_points.fdc
+
+#automatic place and route (vendor) options
+set_option -write_apr_constraint 1
+
+#set result format/file last
+project -result_file "rev_10/TestTopTiming.vm"
+impl -active "rev_10"

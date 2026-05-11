@@ -1,0 +1,1 @@
+set_placement -fixed i:dutInst.napSlave_axiSlaveNap_inst s:x_core.NOC[8][8].logic.noc.nap_s

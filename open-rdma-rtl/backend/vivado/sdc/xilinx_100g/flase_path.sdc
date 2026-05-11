@@ -1,0 +1,2 @@
+# since networkSettings will only be set once, so make it a false path.
+set_false_path -from [get_pins bsv_top/bsvTopWithoutHardIpInstance/qpMrPgtQpc/rq/packetParser/inputPacketClassifier/networkSettingsReg_reg[*]/C]

@@ -1,0 +1,4 @@
+[submodule "src/vendor/xilinx/blue-dmac/blue-dmac"]
+	path = src/vendor/xilinx/blue-dmac/blue-dmac
+	url = git@github.com:datenlord/blue-dmac.git
+	branch = develop
